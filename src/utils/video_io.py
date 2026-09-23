@@ -297,48 +297,52 @@ def save_video(
 
 def extract_frames(
     video_path: Union[str, Path],
-    output_dir: Union[str, Path],
+    output_dir: Optional[Union[str, Path]] = None,
     fps: Optional[float] = None,
     image_format: str = "png",
-) -> List[str]:
-    """Extract frames from a video file and save them as individual images.
+) -> Union[List[str], List[np.ndarray]]:
+    """Extract frames from a video file and save them as individual images or return as list.
 
     Args:
         video_path: Path to the input video file.
-        output_dir: Directory where extracted frame images will be stored.
+        output_dir: Directory where extracted frame images will be stored (optional).
         fps: Target frame rate to sample at. If None, extracts all frames.
         image_format: Format extension for saved images ('png', 'jpg').
 
     Returns:
-        List of absolute file paths to the saved frame images, ordered sequentially.
-
-    Raises:
-        FileNotFoundError: If video_path does not exist.
-        RuntimeError: If frame extraction or saving fails.
+        List of absolute file paths if output_dir is specified, otherwise list of RGB numpy arrays [H, W, C].
     """
-    out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
     frames_tensor, _ = load_video(
         path=video_path,
         fps=fps,
         to_float=False,
     )  # [T, C, H, W], uint8
 
-    saved_paths: List[str] = []
     num_frames = frames_tensor.shape[0]
 
-    for idx in range(num_frames):
-        frame = frames_tensor[idx].permute(1, 2, 0).cpu().numpy()  # [H, W, C]
-        if frame.shape[2] == 1:
-            frame = frame.squeeze(2)
-        img = Image.fromarray(frame)
-        out_file = out_dir / f"frame_{idx:06d}.{image_format}"
-        img.save(out_file)
-        saved_paths.append(str(out_file.resolve()))
+    if output_dir is not None:
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        saved_paths: List[str] = []
+        for idx in range(num_frames):
+            frame = frames_tensor[idx].permute(1, 2, 0).cpu().numpy()  # [H, W, C]
+            if frame.shape[2] == 1:
+                frame = frame.squeeze(2)
+            img = Image.fromarray(frame)
+            out_file = out_dir / f"frame_{idx:06d}.{image_format}"
+            img.save(out_file)
+            saved_paths.append(str(out_file.resolve()))
+        logger.info("Extracted %d frames from %s to %s", len(saved_paths), video_path, out_dir)
+        return saved_paths
+    else:
+        frames_list: List[np.ndarray] = []
+        for idx in range(num_frames):
+            frame = frames_tensor[idx].permute(1, 2, 0).cpu().numpy()
+            if frame.shape[2] == 1:
+                frame = frame.squeeze(2)
+            frames_list.append(frame)
+        return frames_list
 
-    logger.info("Extracted %d frames from %s to %s", len(saved_paths), video_path, out_dir)
-    return saved_paths
 
 
 def frames_to_video(
