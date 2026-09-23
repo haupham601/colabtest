@@ -18,9 +18,5 @@ decord>=0.6.0
 imageio[ffmpeg]
 huggingface-hub>=0.20.0
 wandb
-insightface
+lpips
 onnxruntime-gpu
-mmpose
-mmdet
-mmengine
-mmcv>=2.0.0
