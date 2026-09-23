@@ -27,7 +27,7 @@ training:
   optimizer: "adamw"
   scheduler: "cosine"
   warmup_ratio: 0.05
-  batch_size: 2
+  batch_size: 1
   grad_accum: 8
   max_steps: 15000
   save_every: 500
@@ -48,8 +48,8 @@ distillation:
   ema_decay: 0.999
   max_steps: 5000
   save_every: 500
-  batch_size: 2
-  grad_accum: 4
+  batch_size: 1
+  grad_accum: 8
 
 data:
   resolution:

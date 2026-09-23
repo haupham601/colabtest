@@ -22,6 +22,10 @@ Usage:
 
 import os
 import sys
+
+# Optimize PyTorch memory allocator to prevent CUDA fragmentation
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import math
 import copy
 import argparse
@@ -284,6 +288,11 @@ def main():
     logger.info(f"  Temporal Weight: {temporal_weight}")
     logger.info("=" * 70)
 
+    # Pre-allocate EMA evaluation model once to prevent OOM / per-iteration allocation
+    ema_student = copy.deepcopy(accelerator.unwrap_model(student_dit)).to(device)
+    ema_student.eval()
+    ema_student.requires_grad_(False)
+
     global_step = 0
     while global_step < max_steps:
         for batch in dataloader:
@@ -291,8 +300,9 @@ def main():
                 break
 
             with accelerator.accumulate(student_dit):
-                video_frames = batch["video_frames"]
-                pose_images = batch["pose_images"]
+                dtype = torch.bfloat16 if config.model.dtype == "bf16" else torch.float32
+                video_frames = batch["video_frames"].to(dtype=dtype)
+                pose_images = batch["pose_images"].to(dtype=dtype)
                 b, t, c, h, w = video_frames.shape
 
                 # 1. Encode video frames to latents with frozen VAE
@@ -339,10 +349,7 @@ def main():
                     )
 
                     # 6. Target evaluation with EMA student at timestep t-k
-                    # Create temporary model with EMA weights to compute target
-                    ema_student = copy.deepcopy(accelerator.unwrap_model(student_dit))
                     ema_model.apply_to(ema_student)
-                    ema_student.eval()
 
                     ema_noise_pred = ema_student(
                         x_prev,

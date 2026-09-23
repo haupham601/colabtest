@@ -17,6 +17,10 @@ Usage:
 
 import os
 import sys
+
+# Optimize PyTorch memory allocator to prevent CUDA fragmentation
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import json
 import math
 import argparse
@@ -166,13 +170,15 @@ def load_wan_model(config: OmegaConf, device: torch.device):
 
         def forward(self, x, timestep, encoder_hidden_states=None, pose_embedding=None):
             b, c, t, h, w = x.shape
-            x_flat = x.permute(0, 2, 3, 4, 1).reshape(b, t * h * w, c)
+            # Pool spatially to fixed token grid (e.g. 16x16) to keep attention fast and memory-efficient
+            x_down = F.adaptive_avg_pool3d(x, (t, 16, 16))
+            x_flat = x_down.permute(0, 2, 3, 4, 1).reshape(b * t, 16 * 16, c)
             h_state = self.proj_in(x_flat)
 
             if pose_embedding is not None:
                 if pose_embedding.ndim == 4:
                     bp, tp, np_, cp = pose_embedding.shape
-                    pe = pose_embedding.reshape(bp, tp * np_, cp)
+                    pe = pose_embedding.reshape(bp * tp, np_, cp)
                 else:
                     pe = pose_embedding
 
@@ -186,13 +192,20 @@ def load_wan_model(config: OmegaConf, device: torch.device):
             q = self.to_q(h_state)
             k = self.to_k(h_state)
             v = self.to_v(h_state)
-            attn = torch.bmm(
-                F.softmax(torch.bmm(q, k.transpose(-1, -2)) / math.sqrt(q.shape[-1]), dim=-1),
-                v
-            )
+            attn = F.scaled_dot_product_attention(q, k, v)
             out = self.to_out(attn)
             out = self.proj_out(out)
-            return out.reshape(b, t, h, w, c).permute(0, 4, 1, 2, 3)
+
+            out_3d = out.reshape(b, t, 16, 16, c).permute(0, 4, 1, 2, 3)
+            # Reconstruct to full spatial shape
+            out_full = F.interpolate(
+                out_3d.reshape(b * c, 1, t, 16, 16),
+                size=(t, h, w),
+                mode="trilinear",
+                align_corners=False,
+            ).reshape(b, c, t, h, w)
+            return out_full
+
 
     class PlaceholderScheduler:
         def __init__(self):
@@ -442,11 +455,13 @@ def main():
                 break
 
             with accelerator.accumulate(dit, pose_encoder):
+                dtype = torch.bfloat16 if config.model.dtype == "bf16" else torch.float32
                 ref_image = batch["reference_image"]
-                video_frames = batch["video_frames"]
-                pose_images = batch["pose_images"]
+                video_frames = batch["video_frames"].to(dtype=dtype)
+                pose_images = batch["pose_images"].to(dtype=dtype)
                 keypoints = batch["pose_keypoints"]
                 confidence = batch["confidence_scores"]
+
 
                 b, t, c, h, w = video_frames.shape
 
