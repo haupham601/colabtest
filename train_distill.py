@@ -36,7 +36,21 @@ from torch.utils.data import DataLoader
 from omegaconf import OmegaConf
 from accelerate import Accelerator
 from accelerate.utils import set_seed
+
+# Fix incompatible torchao version in Colab environment before importing PEFT
+try:
+    import torchao
+    from packaging import version
+    if version.parse(torchao.__version__) < version.parse("0.16.0"):
+        for mod in list(sys.modules.keys()):
+            if mod.startswith("torchao"):
+                del sys.modules[mod]
+        sys.modules["torchao"] = None
+except Exception:
+    pass
+
 from peft import LoraConfig, get_peft_model
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -74,6 +88,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
+
     # Load configuration
     config = OmegaConf.load(args.config)
     os.makedirs(args.output_dir, exist_ok=True)
@@ -104,6 +119,7 @@ def main():
 
     if accelerator.is_main_process and args.wandb:
         accelerator.init_trackers(
+
             project_name="AI-Motion-Transfer-Distill",
             config={
                 **OmegaConf.to_container(config, resolve=True),

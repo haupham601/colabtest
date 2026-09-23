@@ -3,8 +3,9 @@
 # ==============================================================================
 
 model:
-  base_model: "Wan-AI/Wan2.1-I2V-14B"
+  base_model: "Wan-AI/Wan2.1-I2V-14B-480P"
   dtype: "bf16"
+
 
 lora:
   rank: 128

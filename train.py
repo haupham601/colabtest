@@ -27,11 +27,25 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+# Fix incompatible torchao version in Colab environment before importing PEFT
+try:
+    import torchao
+    from packaging import version
+    if version.parse(torchao.__version__) < version.parse("0.16.0"):
+        for mod in list(sys.modules.keys()):
+            if mod.startswith("torchao"):
+                del sys.modules[mod]
+except Exception:
+    pass
+
 from torch.utils.data import DataLoader
 from omegaconf import OmegaConf
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 from peft import LoraConfig, get_peft_model
+
+
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -274,6 +288,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     OmegaConf.save(config, os.path.join(args.output_dir, "config.yaml"))
 
+
     # Initialize accelerator
     log_with = "wandb" if args.wandb else None
     accelerator = Accelerator(
@@ -281,6 +296,7 @@ def main():
         mixed_precision=config.training.mixed_precision,
         log_with=log_with,
     )
+
     set_seed(args.seed)
     device = accelerator.device
 
@@ -289,6 +305,7 @@ def main():
             project_name="AI-Motion-Transfer",
             config=OmegaConf.to_container(config, resolve=True),
         )
+
 
 
     # 1. Load base models
