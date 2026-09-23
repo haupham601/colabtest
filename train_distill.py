@@ -70,9 +70,9 @@ def main():
     parser.add_argument("--teacher_checkpoint", type=str, default=None, help="Path to teacher checkpoint directory")
     parser.add_argument("--output_dir", type=str, default="./checkpoints_distill", help="Output directory")
     parser.add_argument("--num_steps", type=int, default=None, help="Target distilled steps (e.g. 4 or 8)")
+    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
-
 
     # Load configuration
     config = OmegaConf.load(args.config)
@@ -93,15 +93,16 @@ def main():
     grad_accum = distill_cfg.get("grad_accum", 4)
 
     # Initialize accelerator
+    log_with = "wandb" if args.wandb else None
     accelerator = Accelerator(
         gradient_accumulation_steps=grad_accum,
         mixed_precision=config.training.mixed_precision,
-        log_with="wandb",
+        log_with=log_with,
     )
     set_seed(args.seed)
     device = accelerator.device
 
-    if accelerator.is_main_process:
+    if accelerator.is_main_process and args.wandb:
         accelerator.init_trackers(
             project_name="AI-Motion-Transfer-Distill",
             config={
@@ -110,6 +111,7 @@ def main():
                 "skipping_steps": skipping_steps,
             },
         )
+
 
     # 1. Load base models
     logger.info("Loading base Wan2.1 model and VAE...")

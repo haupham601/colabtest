@@ -265,6 +265,7 @@ def main():
     parser.add_argument("--data_dir", type=str, default=None, help="Dataset directory")
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--output_dir", type=str, default="./checkpoints")
+    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -273,21 +274,22 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     OmegaConf.save(config, os.path.join(args.output_dir, "config.yaml"))
 
-
     # Initialize accelerator
+    log_with = "wandb" if args.wandb else None
     accelerator = Accelerator(
         gradient_accumulation_steps=config.training.grad_accum,
         mixed_precision=config.training.mixed_precision,
-        log_with="wandb",
+        log_with=log_with,
     )
     set_seed(args.seed)
     device = accelerator.device
 
-    if accelerator.is_main_process:
+    if accelerator.is_main_process and args.wandb:
         accelerator.init_trackers(
             project_name="AI-Motion-Transfer",
             config=OmegaConf.to_container(config, resolve=True),
         )
+
 
     # 1. Load base models
     logger.info("Loading models...")
