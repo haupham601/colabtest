@@ -253,11 +253,12 @@ def validate(
     total_loss = 0.0
     num_batches = 0
 
+    dtype = torch.bfloat16 if accelerator.mixed_precision == "bf16" else torch.float32
     with torch.no_grad():
         for batch in val_loader:
             ref_image = batch["reference_image"].to(device)
-            video_frames = batch["video_frames"].to(device)
-            pose_images = batch["pose_images"].to(device)
+            video_frames = batch["video_frames"].to(device, dtype=dtype)
+            pose_images = batch["pose_images"].to(device, dtype=dtype)
 
             b, t, c, h, w = video_frames.shape
             video_3d = video_frames.permute(0, 2, 1, 3, 4)
