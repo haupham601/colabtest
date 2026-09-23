@@ -83,21 +83,36 @@ class MotionTransferDataset(Dataset):
         confidences_list = []
         
         for f_idx in frame_indices:
-            pose_file = os.path.join(pose_folder, f"frame_{f_idx:03d}.json")
-            if os.path.exists(pose_file):
-                with open(pose_file, 'r') as f:
+            # Check multiple filename formats
+            pose_file = None
+            for pattern in [f"frame_{f_idx:04d}.json", f"frame_{f_idx:03d}.json", f"frame_{f_idx:06d}.json", f"{f_idx:04d}.json"]:
+                candidate = os.path.join(pose_folder, pattern)
+                if os.path.exists(candidate):
+                    pose_file = candidate
+                    break
+
+            if pose_file and os.path.exists(pose_file):
+                with open(pose_file, 'r', encoding='utf-8') as f:
                     pose_data = json.load(f)
-                    # Example format fallback
-                    kpts = np.array(pose_data.get('keypoints', np.zeros((17, 3))))
-                    conf = np.array(pose_data.get('confidence', np.ones(17)))
+                    raw_kpts = pose_data.get('body_keypoints', pose_data.get('keypoints', np.zeros((18, 3))))
+                    kpts = np.array(raw_kpts, dtype=np.float32)
+                    if kpts.ndim == 1:
+                        kpts = kpts.reshape(-1, 3)
+
+                    raw_conf = pose_data.get('confidence_scores', pose_data.get('confidence', 0.85))
+                    if isinstance(raw_conf, (int, float)):
+                        conf = np.full(len(kpts), float(raw_conf), dtype=np.float32)
+                    else:
+                        conf = np.array(raw_conf, dtype=np.float32)
             else:
-                kpts = np.zeros((17, 3))
-                conf = np.zeros(17)
-                
+                kpts = np.zeros((18, 3), dtype=np.float32)
+                conf = np.zeros(18, dtype=np.float32)
+
             pose_img = self.render_pose(kpts, self.resolution[0], self.resolution[1])
             pose_images.append(pose_img)
             keypoints_list.append(kpts)
             confidences_list.append(conf)
+
             
         # Resize inputs to match requested resolution
         # Usually requires resizing the raw numpy arrays, using simple reshape here for structure
