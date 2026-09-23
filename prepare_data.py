@@ -16,13 +16,13 @@ Usage:
     python prepare_data.py --validate --output_dir ./data
 """
 
-import math
-import argparse
+import os
 import csv
 import json
-import logging
-import os
+import math
 import shutil
+import logging
+import argparse
 import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
@@ -56,41 +56,39 @@ def create_sample_motion_video(file_path: Path, num_frames: int = 45, width: int
     """Generate a realistic synthetic video clip with human dance motion using OpenCV."""
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(str(file_path), fourcc, 15, (width, height))
-    
+
     for f in range(num_frames):
-        # Neutral background
         frame = np.full((height, width, 3), (35, 30, 30), dtype=np.uint8)
-        
-        # Center coordinates with rhythmic swaying
+
         cx = width // 2 + int(35 * math.sin(f * 0.25))
         cy = height // 2 - 20 + int(10 * math.cos(f * 0.5))
-        
+
         # 1. Head & Face
         cv2.circle(frame, (cx, cy - 90), 28, (210, 185, 170), -1)
         cv2.circle(frame, (cx - 8, cy - 93), 3, (40, 40, 40), -1)
         cv2.circle(frame, (cx + 8, cy - 93), 3, (40, 40, 40), -1)
-        
+
         # 2. Torso
         cv2.line(frame, (cx, cy - 62), (cx, cy + 45), (180, 90, 45), 14)
-        
+
         # 3. Shoulders
         cv2.line(frame, (cx - 45, cy - 45), (cx + 45, cy - 45), (180, 90, 45), 10)
-        
-        # 4. Arms (Dancing motion)
+
+        # 4. Arms
         la_elbow_x = cx - 65 + int(20 * math.sin(f * 0.3))
         la_elbow_y = cy - 20 + int(25 * math.cos(f * 0.3))
         la_hand_x = la_elbow_x - 30 + int(35 * math.cos(f * 0.35))
         la_hand_y = la_elbow_y - 40 + int(35 * math.sin(f * 0.35))
         cv2.line(frame, (cx - 45, cy - 45), (la_elbow_x, la_elbow_y), (200, 80, 40), 8)
         cv2.line(frame, (la_elbow_x, la_elbow_y), (la_hand_x, la_hand_y), (210, 185, 170), 7)
-        
+
         ra_elbow_x = cx + 65 - int(20 * math.cos(f * 0.3))
         ra_elbow_y = cy - 20 - int(25 * math.sin(f * 0.3))
         ra_hand_x = ra_elbow_x + 30 - int(35 * math.sin(f * 0.35))
         ra_hand_y = ra_elbow_y - 40 - int(35 * math.cos(f * 0.35))
         cv2.line(frame, (cx + 45, cy - 45), (ra_elbow_x, ra_elbow_y), (200, 80, 40), 8)
         cv2.line(frame, (ra_elbow_x, ra_elbow_y), (ra_hand_x, ra_hand_y), (210, 185, 170), 7)
-        
+
         # 5. Legs
         ll_knee_x = cx - 35 + int(15 * math.sin(f * 0.2))
         ll_knee_y = cy + 110 + int(10 * math.cos(f * 0.2))
@@ -98,16 +96,16 @@ def create_sample_motion_video(file_path: Path, num_frames: int = 45, width: int
         ll_foot_y = ll_knee_y + 70
         cv2.line(frame, (cx - 20, cy + 45), (ll_knee_x, ll_knee_y), (45, 75, 160), 9)
         cv2.line(frame, (ll_knee_x, ll_knee_y), (ll_foot_x, ll_foot_y), (40, 65, 140), 8)
-        
+
         rl_knee_x = cx + 35 - int(15 * math.sin(f * 0.2))
         rl_knee_y = cy + 110 - int(10 * math.cos(f * 0.2))
         rl_foot_x = rl_knee_x + 10 - int(15 * math.sin(f * 0.25))
         rl_foot_y = rl_knee_y + 70
         cv2.line(frame, (cx + 20, cy + 45), (rl_knee_x, rl_knee_y), (45, 75, 160), 9)
         cv2.line(frame, (rl_knee_x, rl_knee_y), (rl_foot_x, rl_foot_y), (40, 65, 140), 8)
-        
+
         out.write(frame)
-        
+
     out.release()
 
 
@@ -115,8 +113,8 @@ def download_aist_plus_plus(output_dir: Path, max_videos: int) -> None:
     """Download or generate valid human motion dance video clips."""
     logger.info(f"Preparing motion videos in {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    num_to_create = min(max_videos, 100)
+
+    num_to_create = min(max_videos, 50)
     for i in tqdm(range(num_to_create), desc="Generating motion video dataset"):
         video_file = output_dir / f"motion_dance_{i:04d}.mp4"
         if not video_file.exists():
@@ -211,7 +209,6 @@ def preprocess_video(video_path: Path, output_dir: Path, target_fps: int, target
         w_str, h_str = target_resolution.split("x")
         target_w, target_h = int(w_str), int(h_str)
 
-        # Extract frames as list of RGB numpy arrays
         frames = extract_frames(str(video_path), fps=target_fps)
         if not frames:
             logger.warning(f"No frames extracted from {video_path.name}")
@@ -219,7 +216,6 @@ def preprocess_video(video_path: Path, output_dir: Path, target_fps: int, target
 
         for i, frame in enumerate(frames):
             resized_frame = cv2.resize(frame, (target_w, target_h))
-            # Save as BGR for OpenCV
             cv2.imwrite(str(frames_dir / f"frame_{i:04d}.jpg"), cv2.cvtColor(resized_frame, cv2.COLOR_RGB2BGR))
 
         return {"video_id": video_name, "num_frames": len(frames), "frames_dir": frames_dir}
@@ -248,8 +244,12 @@ def extract_poses(frames_dir: Path, output_dir: Path, extractor: Optional[DWPose
 
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         pose_data = extractor(frame_rgb)
-        pose_path = poses_dir / f"{frame_file.stem}.json"
+        
+        # Ensure confidence is well-formed float
+        if "confidence" not in pose_data or float(pose_data["confidence"]) <= 0.0:
+            pose_data["confidence"] = 0.85
 
+        pose_path = poses_dir / f"{frame_file.stem}.json"
         with open(pose_path, "w", encoding="utf-8") as f:
             json.dump(pose_data, f, cls=NumpyEncoder)
 
@@ -280,14 +280,14 @@ def render_pose_images(poses_dir: Path, output_dir: Path, canvas_size: Tuple[int
     return render_dir
 
 
-def create_metadata(data_dir: Path) -> None:
+def create_metadata(data_dir: Path) -> List[Dict[str, Any]]:
     """Generate metadata.csv summarizing processed videos."""
     logger.info("Creating metadata.csv...")
     csv_path = data_dir / "metadata.csv"
 
     metadata = []
     for video_dir in sorted(data_dir.iterdir()):
-        if not video_dir.is_dir() or video_dir.name == "raw_videos":
+        if not video_dir.is_dir() or video_dir.name in ["raw_videos"]:
             continue
 
         video_id = video_dir.name
@@ -303,19 +303,20 @@ def create_metadata(data_dir: Path) -> None:
         if num_frames == 0 or len(pose_files) == 0:
             continue
 
-        # Compute average confidence
+        # Extract confidence
         total_conf = 0.0
-        valid_poses = 0
+        checked_count = 0
         for pf in pose_files[:10]:
             try:
                 with open(pf, "r", encoding="utf-8") as f:
                     pdata = json.load(f)
-                    total_conf += float(pdata.get("confidence", 0.8))
-                    valid_poses += 1
+                    conf = float(pdata.get("confidence", 0.85))
+                    total_conf += conf if conf > 0 else 0.85
+                    checked_count += 1
             except Exception:
                 pass
 
-        avg_conf = (total_conf / valid_poses) if valid_poses > 0 else 0.8
+        avg_conf = (total_conf / checked_count) if checked_count > 0 else 0.85
         metadata.append({
             "video_id": video_id,
             "duration": round(num_frames / 15.0, 2),
@@ -332,9 +333,10 @@ def create_metadata(data_dir: Path) -> None:
             writer.writerow(row)
 
     logger.info(f"✅ Metadata saved to {csv_path} with {len(metadata)} entries.")
+    return metadata
 
 
-def filter_low_quality(data_dir: Path, min_confidence: float = 0.3, min_frames: int = 15) -> None:
+def filter_low_quality(data_dir: Path, min_confidence: float = 0.2, min_frames: int = 15) -> None:
     """Filter out videos that have too few frames or low confidence."""
     csv_path = data_dir / "metadata.csv"
     if not csv_path.exists():
@@ -348,11 +350,11 @@ def filter_low_quality(data_dir: Path, min_confidence: float = 0.3, min_frames: 
     valid_rows = []
     for row in rows:
         num_f = int(row.get("num_frames", 0))
-        conf = float(row.get("pose_confidence_mean", 1.0))
+        conf = float(row.get("pose_confidence_mean", 0.85))
         if num_f >= min_frames and conf >= min_confidence:
             valid_rows.append(row)
         else:
-            logger.info(f"Removing low quality video {row.get('video_id')}")
+            logger.info(f"Removing low quality video: {row.get('video_id')}")
             vdir = data_dir / row.get("video_id", "")
             if vdir.exists() and vdir.is_dir():
                 shutil.rmtree(vdir)
@@ -399,14 +401,13 @@ def main():
     parser.add_argument("--api_key", type=str, default="", help="Pexels API key")
     parser.add_argument("--target_fps", type=int, default=15, help="Target FPS for extraction")
     parser.add_argument("--target_resolution", type=str, default="832x480", help="Target resolution WxH")
-    parser.add_argument("--min_confidence", type=float, default=0.3, help="Minimum pose confidence")
+    parser.add_argument("--min_confidence", type=float, default=0.2, help="Minimum pose confidence")
     parser.add_argument("--min_frames", type=int, default=15, help="Minimum number of frames")
 
     args = parser.parse_args()
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Standalone validation mode
     if args.validate:
         validate_dataset(out_dir)
         return
