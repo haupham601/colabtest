@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual env
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Model weights (large files)
+models/
+*.safetensors
+*.bin
+*.onnx
+*.pth
+*.pt
+!src/**/*.py
+
+# Training outputs
+checkpoints/
+outputs/
+wandb/
+runs/
+
+# Data (large)
+data/videos/
+data/poses/
+data/pose_images/
+*.mp4
+*.avi
+*.mov
+
+# Keep structure
+!models/.gitkeep
+!outputs/.gitkeep
+!data/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+

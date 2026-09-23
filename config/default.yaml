@@ -1,0 +1,79 @@
+# ==============================================================================
+# AI Motion Transfer Configuration: LoRA + 3D Conv Pose Encoder on Wan2.1-14B
+# ==============================================================================
+
+model:
+  base_model: "Wan-AI/Wan2.1-I2V-14B"
+  dtype: "bf16"
+
+lora:
+  rank: 128
+  alpha: 128
+  target_modules:
+    - "to_q"
+    - "to_k"
+    - "to_v"
+    - "to_out"
+
+pose_encoder:
+  in_channels: 3
+  base_channels: 64
+  num_blocks: 4
+  use_3d_conv: true
+
+training:
+  lr: 5.0e-5
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_ratio: 0.05
+  batch_size: 2
+  grad_accum: 8
+  max_steps: 15000
+  save_every: 500
+  val_every: 500
+  mixed_precision: "bf16"
+  gradient_checkpointing: true
+  max_grad_norm: 1.0
+
+# Consistency Distillation configuration for ultra-fast 4-8 step inference
+distillation:
+  teacher_checkpoint: "./checkpoints/final"
+  num_steps: 8
+  teacher_steps: 25
+  skipping_steps: 2
+  lr: 2.0e-5
+  huber_c: 0.001
+  temporal_weight: 0.2
+  ema_decay: 0.999
+  max_steps: 5000
+  save_every: 500
+  batch_size: 2
+  grad_accum: 4
+
+data:
+  resolution:
+    - 832
+    - 480
+  num_frames: 49
+  fps: 15
+  dataset_path: "./data"
+  pose_type: "dwpose"
+
+loss:
+  recon_weight: 1.0
+  perceptual_weight: 0.5
+  identity_weight: 0.2
+  regional_weight: 0.3
+  pose_confidence_weight: 0.1
+
+inference:
+  steps: 25
+  distilled_steps: 8
+  guidance_scale: 2.0
+  teacache: true
+  teacache_threshold: 0.05
+
+output:
+  dir: "./outputs"
+  format: "mp4"
+  codec: "h264"
