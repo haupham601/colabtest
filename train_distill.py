@@ -66,11 +66,13 @@ def copy_model_weights(source: nn.Module, target: nn.Module) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Train Consistency Distillation for AI Motion Transfer")
     parser.add_argument("--config", type=str, default="config/default.yaml", help="Path to config file")
+    parser.add_argument("--data_dir", type=str, default=None, help="Dataset directory")
     parser.add_argument("--teacher_checkpoint", type=str, default=None, help="Path to teacher checkpoint directory")
     parser.add_argument("--output_dir", type=str, default="./checkpoints_distill", help="Output directory")
     parser.add_argument("--num_steps", type=int, default=None, help="Target distilled steps (e.g. 4 or 8)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
+
 
     # Load configuration
     config = OmegaConf.load(args.config)
@@ -197,14 +199,19 @@ def main():
     lr_scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, max_steps)
 
     # 7. Dataset & DataLoader
-    logger.info(f"Loading dataset from {config.data.dataset_path}")
+    dataset_path = args.data_dir or config.data.dataset_path
+    if not os.path.exists(dataset_path) and os.path.exists("/content/data"):
+        dataset_path = "/content/data"
+
+    logger.info(f"Loading dataset from {dataset_path}")
     dataset = MotionTransferDataset(
-        data_dir=config.data.dataset_path,
+        data_dir=dataset_path,
         resolution=tuple(config.data.resolution),
         num_frames=config.data.num_frames,
         fps=config.data.fps,
         pose_type=config.data.pose_type,
     )
+
 
     if len(dataset) == 0:
         logger.warning("Dataset is empty. Using synthetic fallback samples for initialization test.")

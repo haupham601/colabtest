@@ -262,6 +262,7 @@ def validate(
 def main():
     parser = argparse.ArgumentParser(description="Train AI Motion Transfer")
     parser.add_argument("--config", type=str, default="config/default.yaml")
+    parser.add_argument("--data_dir", type=str, default=None, help="Dataset directory")
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--output_dir", type=str, default="./checkpoints")
     parser.add_argument("--seed", type=int, default=42)
@@ -271,6 +272,7 @@ def main():
     config = OmegaConf.load(args.config)
     os.makedirs(args.output_dir, exist_ok=True)
     OmegaConf.save(config, os.path.join(args.output_dir, "config.yaml"))
+
 
     # Initialize accelerator
     accelerator = Accelerator(
@@ -343,14 +345,19 @@ def main():
     )
 
     # 6. Dataset
-    logger.info(f"Loading dataset from {config.data.dataset_path}")
+    dataset_path = args.data_dir or config.data.dataset_path
+    if not os.path.exists(dataset_path) and os.path.exists("/content/data"):
+        dataset_path = "/content/data"
+
+    logger.info(f"Loading dataset from {dataset_path}")
     dataset = MotionTransferDataset(
-        data_dir=config.data.dataset_path,
+        data_dir=dataset_path,
         resolution=tuple(config.data.resolution),
         num_frames=config.data.num_frames,
         fps=config.data.fps,
         pose_type=config.data.pose_type,
     )
+
 
     if len(dataset) == 0:
         logger.warning(
