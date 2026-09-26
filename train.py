@@ -11,8 +11,8 @@ Usage:
     # Resume training
     python train.py --config config/default.yaml --resume ./checkpoints/step-5000
 
-    # On Colab with accelerate
-    accelerate launch train.py --config config/default.yaml
+    # On Colab with accelerate (MUST pass --mixed_precision bf16)
+    accelerate launch --mixed_precision bf16 train.py --config config/default.yaml
 """
 
 import os
@@ -144,9 +144,10 @@ def load_wan_model(config: OmegaConf, device: torch.device):
             class Dist:
                 def __init__(self, tensor):
                     b, c, t, h, w = tensor.shape
+                    # Always create latents in FP32 to avoid dtype issues
                     self.latent = torch.randn(
                         b, 16, t, max(1, h // 8), max(1, w // 8),
-                        device=tensor.device, dtype=tensor.dtype
+                        device=tensor.device, dtype=torch.float32
                     )
                 def sample(self):
                     return self.latent
@@ -154,7 +155,7 @@ def load_wan_model(config: OmegaConf, device: torch.device):
 
         def decode(self, z: torch.Tensor):
             b, c, t, h, w = z.shape
-            return torch.randn(b, 3, t, h * 8, w * 8, device=z.device, dtype=z.dtype)
+            return torch.randn(b, 3, t, h * 8, w * 8, device=z.device, dtype=torch.float32)
 
     class PlaceholderDiT(nn.Module):
         """Placeholder DiT with matching attention target modules for LoRA."""
@@ -170,23 +171,32 @@ def load_wan_model(config: OmegaConf, device: torch.device):
 
         def forward(self, x, timestep, encoder_hidden_states=None, pose_embedding=None):
             b, c, t, h, w = x.shape
-            # Pool spatially to fixed token grid (e.g. 16x16) to keep attention fast and memory-efficient
+            # Cast input to match model weight dtype to avoid dtype conflicts
+            x = x.to(dtype=self.proj_in.weight.dtype)
+
+            # Pool spatially to fixed token grid (e.g. 16x16) to keep attention fast
             x_down = F.adaptive_avg_pool3d(x, (t, 16, 16))
             x_flat = x_down.permute(0, 2, 3, 4, 1).reshape(b * t, 16 * 16, c)
             h_state = self.proj_in(x_flat)
 
             if pose_embedding is not None:
-                if pose_embedding.ndim == 4:
-                    bp, tp, np_, cp = pose_embedding.shape
-                    pe = pose_embedding.reshape(bp * tp, np_, cp)
-                else:
-                    pe = pose_embedding
+                pe = pose_embedding.to(dtype=h_state.dtype)
+                if pe.ndim == 4:
+                    bp, tp, np_, cp = pe.shape
+                    pe = pe.reshape(bp * tp, np_, cp)
 
                 seq_len = h_state.shape[1]
                 if pe.shape[1] >= seq_len:
                     pe = pe[:, :seq_len, :]
                 else:
                     pe = F.pad(pe, (0, 0, 0, seq_len - pe.shape[1]))
+
+                # Match batch dimension
+                if pe.shape[0] != h_state.shape[0]:
+                    if pe.shape[0] < h_state.shape[0]:
+                        repeats = h_state.shape[0] // pe.shape[0]
+                        pe = pe.repeat(repeats, 1, 1)
+                    pe = pe[:h_state.shape[0]]
                 h_state = h_state + pe
 
             q = self.to_q(h_state)
@@ -213,7 +223,7 @@ def load_wan_model(config: OmegaConf, device: torch.device):
 
         def add_noise(self, original: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor):
             alpha = (1.0 - timesteps.float() / self.num_train_timesteps).view(-1, 1, 1, 1, 1)
-            return alpha * original + (1.0 - alpha) * noise
+            return alpha.to(dtype=original.dtype) * original + (1.0 - alpha).to(dtype=original.dtype) * noise
 
     return (
         PlaceholderDiT().to(device),
@@ -253,12 +263,10 @@ def validate(
     total_loss = 0.0
     num_batches = 0
 
-    dtype = torch.bfloat16 if accelerator.mixed_precision == "bf16" else torch.float32
     with torch.no_grad():
         for batch in val_loader:
-            ref_image = batch["reference_image"].to(device)
-            video_frames = batch["video_frames"].to(device, dtype=dtype)
-            pose_images = batch["pose_images"].to(device, dtype=dtype)
+            video_frames = batch["video_frames"].to(device)
+            pose_images = batch["pose_images"].to(device)
 
             b, t, c, h, w = video_frames.shape
             video_3d = video_frames.permute(0, 2, 1, 3, 4)
@@ -313,6 +321,9 @@ def main():
 
     set_seed(args.seed)
     device = accelerator.device
+
+    # Log actual mixed precision mode for debugging
+    logger.info(f"Accelerator mixed_precision = '{accelerator.mixed_precision}'")
 
     if accelerator.is_main_process and args.wandb:
         accelerator.init_trackers(
@@ -456,50 +467,52 @@ def main():
                 break
 
             with accelerator.accumulate(dit, pose_encoder):
-                dtype = torch.bfloat16 if config.model.dtype == "bf16" else torch.float32
+                # DO NOT manually cast to bf16 — let accelerator.autocast handle it
                 ref_image = batch["reference_image"]
-                video_frames = batch["video_frames"].to(dtype=dtype)
-                pose_images = batch["pose_images"].to(dtype=dtype)
+                video_frames = batch["video_frames"]
+                pose_images = batch["pose_images"]
                 keypoints = batch["pose_keypoints"]
                 confidence = batch["confidence_scores"]
 
-
                 b, t, c, h, w = video_frames.shape
 
+                # Encode video to latents (frozen VAE, no gradients needed)
                 with torch.no_grad():
                     video_3d = video_frames.permute(0, 2, 1, 3, 4)
                     latents = vae.encode(video_3d).sample()
 
-                pose_embedding = pose_encoder(pose_images)
+                # Forward pass with autocast for proper mixed precision
+                with accelerator.autocast():
+                    pose_embedding = pose_encoder(pose_images)
 
-                noise = torch.randn_like(latents)
-                timesteps = torch.randint(
-                    0, noise_scheduler.num_train_timesteps, (b,), device=device
-                ).long()
+                    noise = torch.randn_like(latents)
+                    timesteps = torch.randint(
+                        0, noise_scheduler.num_train_timesteps, (b,), device=device
+                    ).long()
 
-                noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+                    noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-                noise_pred = dit(
-                    noisy_latents,
-                    timestep=timesteps,
-                    pose_embedding=pose_embedding,
-                )
+                    noise_pred = dit(
+                        noisy_latents,
+                        timestep=timesteps,
+                        pose_embedding=pose_embedding,
+                    )
 
-                loss_config = {
-                    "recon": config.loss.recon_weight,
-                    "perceptual": config.loss.perceptual_weight,
-                    "identity": config.loss.identity_weight,
-                    "regional": config.loss.regional_weight,
-                    "pose_confidence": config.loss.pose_confidence_weight,
-                }
-                total_loss, loss_dict = loss_fn(
-                    pred=noise_pred,
-                    target=noise,
-                    ref_image=ref_image,
-                    keypoints=keypoints,
-                    confidence=confidence,
-                    config=loss_config,
-                )
+                    loss_config = {
+                        "recon": config.loss.recon_weight,
+                        "perceptual": config.loss.perceptual_weight,
+                        "identity": config.loss.identity_weight,
+                        "regional": config.loss.regional_weight,
+                        "pose_confidence": config.loss.pose_confidence_weight,
+                    }
+                    total_loss, loss_dict = loss_fn(
+                        pred=noise_pred,
+                        target=noise,
+                        ref_image=ref_image,
+                        keypoints=keypoints,
+                        confidence=confidence,
+                        config=loss_config,
+                    )
 
                 accelerator.backward(total_loss)
 

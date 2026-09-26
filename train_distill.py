@@ -7,13 +7,13 @@ and Video Temporal Consistency Loss.
 
 Usage:
     # Distill trained teacher checkpoint to 8 steps
-    accelerate launch train_distill.py \
+    accelerate launch --mixed_precision bf16 train_distill.py \
         --config config/default.yaml \
         --teacher_checkpoint ./checkpoints/final \
         --output_dir ./checkpoints_distill
 
     # Distill with custom target steps
-    accelerate launch train_distill.py \
+    accelerate launch --mixed_precision bf16 train_distill.py \
         --config config/default.yaml \
         --teacher_checkpoint ./checkpoints/final \
         --num_steps 4 \
@@ -108,8 +108,8 @@ def main():
     learning_rate = distill_cfg.get("lr", 2e-5)
     max_steps = distill_cfg.get("max_steps", 5000)
     save_every = distill_cfg.get("save_every", 500)
-    batch_size = distill_cfg.get("batch_size", 2)
-    grad_accum = distill_cfg.get("grad_accum", 4)
+    batch_size = distill_cfg.get("batch_size", 1)
+    grad_accum = distill_cfg.get("grad_accum", 8)
 
     # Initialize accelerator
     log_with = "wandb" if args.wandb else None
@@ -120,6 +120,8 @@ def main():
     )
     set_seed(args.seed)
     device = accelerator.device
+
+    logger.info(f"Accelerator mixed_precision = '{accelerator.mixed_precision}'")
 
     if accelerator.is_main_process and args.wandb:
         accelerator.init_trackers(
@@ -288,7 +290,7 @@ def main():
     logger.info(f"  Temporal Weight: {temporal_weight}")
     logger.info("=" * 70)
 
-    # Pre-allocate EMA evaluation model once to prevent OOM / per-iteration allocation
+    # Pre-allocate EMA evaluation model once to prevent OOM
     ema_student = copy.deepcopy(accelerator.unwrap_model(student_dit)).to(device)
     ema_student.eval()
     ema_student.requires_grad_(False)
@@ -300,9 +302,9 @@ def main():
                 break
 
             with accelerator.accumulate(student_dit):
-                dtype = torch.bfloat16 if config.model.dtype == "bf16" else torch.float32
-                video_frames = batch["video_frames"].to(dtype=dtype)
-                pose_images = batch["pose_images"].to(dtype=dtype)
+                # DO NOT manually cast to bf16 — let accelerator.autocast handle it
+                video_frames = batch["video_frames"]
+                pose_images = batch["pose_images"]
                 b, t, c, h, w = video_frames.shape
 
                 # 1. Encode video frames to latents with frozen VAE
@@ -312,65 +314,67 @@ def main():
                     # Pose embedding from frozen PoseEncoder
                     pose_embedding = pose_encoder(pose_images)
 
-                # 2. Sample ODE timestep pair (t, t - k)
-                timesteps_t, timesteps_prev = cd_loss_fn.sample_timestep_pairs(b, device)
+                # Forward pass with autocast for proper mixed precision
+                with accelerator.autocast():
+                    # 2. Sample ODE timestep pair (t, t - k)
+                    timesteps_t, timesteps_prev = cd_loss_fn.sample_timestep_pairs(b, device)
 
-                # 3. Add noise to sample x_t
-                noise = torch.randn_like(latents)
-                noisy_latents = solver.add_noise(latents, noise, timesteps_t)
+                    # 3. Add noise to sample x_t
+                    noise = torch.randn_like(latents)
+                    noisy_latents = solver.add_noise(latents, noise, timesteps_t)
 
-                # 4. Student forward pass at timestep t
-                student_noise_pred = student_dit(
-                    noisy_latents,
-                    timestep=timesteps_t,
-                    pose_embedding=pose_embedding,
-                )
-                student_pred_x0 = get_predicted_x0(
-                    student_noise_pred,
-                    noisy_latents,
-                    timesteps_t,
-                    solver.alphas_cumprod,
-                    prediction_type="epsilon",
-                )
-
-                # 5. Teacher step: compute trajectory to x_{t-k}
-                with torch.no_grad():
-                    teacher_noise_pred = teacher_dit(
+                    # 4. Student forward pass at timestep t
+                    student_noise_pred = student_dit(
                         noisy_latents,
                         timestep=timesteps_t,
                         pose_embedding=pose_embedding,
                     )
-                    # 1-step DDIM solver from t -> t-k
-                    x_prev = solver.ddim_step(
-                        model_output=teacher_noise_pred,
-                        timestep=timesteps_t,
-                        prev_timestep=timesteps_prev,
-                        sample=noisy_latents,
-                    )
-
-                    # 6. Target evaluation with EMA student at timestep t-k
-                    ema_model.apply_to(ema_student)
-
-                    ema_noise_pred = ema_student(
-                        x_prev,
-                        timestep=timesteps_prev,
-                        pose_embedding=pose_embedding,
-                    )
-                    target_pred_x0 = get_predicted_x0(
-                        ema_noise_pred,
-                        x_prev,
-                        timesteps_prev,
+                    student_pred_x0 = get_predicted_x0(
+                        student_noise_pred,
+                        noisy_latents,
+                        timesteps_t,
                         solver.alphas_cumprod,
                         prediction_type="epsilon",
                     )
 
-                # 7. Consistency Distillation Loss (Pseudo-Huber)
-                cd_loss = cd_loss_fn(student_pred_x0, target_pred_x0)
+                    # 5. Teacher step: compute trajectory to x_{t-k}
+                    with torch.no_grad():
+                        teacher_noise_pred = teacher_dit(
+                            noisy_latents,
+                            timestep=timesteps_t,
+                            pose_embedding=pose_embedding,
+                        )
+                        # 1-step DDIM solver from t -> t-k
+                        x_prev = solver.ddim_step(
+                            model_output=teacher_noise_pred,
+                            timestep=timesteps_t,
+                            prev_timestep=timesteps_prev,
+                            sample=noisy_latents,
+                        )
 
-                # 8. Video Temporal Consistency Loss
-                temp_loss = temporal_loss_fn(student_pred_x0, target_pred_x0)
+                        # 6. Target evaluation with EMA student at timestep t-k
+                        ema_model.apply_to(ema_student)
 
-                total_loss = cd_loss + temporal_weight * temp_loss
+                        ema_noise_pred = ema_student(
+                            x_prev,
+                            timestep=timesteps_prev,
+                            pose_embedding=pose_embedding,
+                        )
+                        target_pred_x0 = get_predicted_x0(
+                            ema_noise_pred,
+                            x_prev,
+                            timesteps_prev,
+                            solver.alphas_cumprod,
+                            prediction_type="epsilon",
+                        )
+
+                    # 7. Consistency Distillation Loss (Pseudo-Huber)
+                    cd_loss = cd_loss_fn(student_pred_x0, target_pred_x0)
+
+                    # 8. Video Temporal Consistency Loss
+                    temp_loss = temporal_loss_fn(student_pred_x0, target_pred_x0)
+
+                    total_loss = cd_loss + temporal_weight * temp_loss
 
                 # Backward and optimization
                 accelerator.backward(total_loss)
@@ -459,4 +463,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
